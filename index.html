@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VASCII v1.6 Transparent</title>
+</head>
+<body>
+<center>
+<h1>ASCII/Emoji VTuber v1.6 Transparent</h1>
+<canvas id="canvas" width="500" height="200" style="border:1px solid #000"></canvas>
+<br>
+<input type="file" id="audioFile" accept="audio/*">
+<button id="recordBtn">Start Recording</button>
+<br><br>
+<label>Choose Preset: 
+<select id="presetSelect">
+  <option value="ascii">ASCII</option>
+  <option value="emojiboy">Emoji Boy</option>
+  <option value="mitten">Mitten</option>
+  <option value="bluedude">Bluedude</option>
+  <option value="moon">Moon</option>
+  <option value="classic">Classic</option>
+  <option value="sniper">Sniper</option>
+  <option value="rain">Rain</option>
+  <option value="teacher">Teacher</option>
+</select>
+</label>
+<p id="status">Status: Waiting</p>
+
+<details>
+  <summary>Controls / Guide</summary>
+  <ul style="text-align:left; display:inline-block; margin-top:5px;">
+    <li>1 = Happy</li>
+    <li>2 = Angry</li>
+    <li>3 = Surprised</li>
+    <li>0 = Neutral</li>
+    <li>Hold Space = Talk</li>
+    <li>Load an audio file → Start Recording → Download WebM</li>
+    <li>Choose Preset from dropdown</li>
+  </ul>
+</details>
+</center>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const audioInput = document.getElementById('audioFile');
+const recordBtn = document.getElementById('recordBtn');
+const presetSelect = document.getElementById('presetSelect');
+const status = document.getElementById('status');
+
+const presets = {
+  ascii: {neutral:'/(\u00B0-\u00B0)\\', happy:'/(\u00B0o\u00B0)\\', angry:'/(\u003E_<)\\', surprised:'/(\u004F_\u004F)\\', blink:'/(-_-)\\', talk1:'/(\u00B0o\u00B0)\\', talk2:'/(\u00B0-\u00B0)\\'},
+  emojiboy:{neutral:'😐', happy:'😆', angry:'😠', surprised:'😮', blink:'😑', talk1:'😆', talk2:'😐'},
+  mitten:{neutral:'😺', happy:'😸', angry:'😾', surprised:'🙀', blink:'😿', talk1:'😸', talk2:'😺'},
+  bluedude:{neutral:'👤', happy:'🗣️', angry:'👤', surprised:'🗣️', blink:'👤', talk1:'🗣️', talk2:'👤'},
+  moon:{neutral:'🌚', happy:'🌝', angry:'🌚', surprised:'🌝', blink:'🌚', talk1:'🌝', talk2:'🌚'},
+  classic:{neutral:'[-_-]', happy:'[^_^]', angry:'[>_<]', surprised:'[O_O]', blink:'[-_-]', talk1:'[^_^]', talk2:'[-_-]'},
+  sniper:{neutral:'▄︻デ══━一', happy:'▄︻デ══━一💥', angry:'▄︻デ══━一', surprised:'▄︻デ══━一💥', blink:'▄︻デ══━一', talk1:'▄︻デ══━一💥', talk2:'▄︻デ══━一'},
+  rain:{neutral:'☁️', happy:'🌧️', angry:'⛈️', surprised:'🌩️', blink:'☁️', talk1:'🌧️', talk2:'☁️'},
+  teacher:{neutral:'/(°-°)\\', happy:'/(°o°)\\', angry:'/(>_<)\\', surprised:'/(O_O)\\', blink:'/(-_-)\\', talk1:'/(°o°)ノ', talk2:'/(°o°)—'}
+};
+
+let currentPreset = presets['ascii'];
+let currentFace = currentPreset.neutral;
+let talking=false;
+let talkingToggle=false;
+let blinkTimeout;
+let audioContext, analyser, source, dataArray, freqArray, audioElement;
+let recorder, chunks=[], animationId;
+let isSpaceDown=false;
+
+function drawFace(){
+  ctx.clearRect(0,0,canvas.width,canvas.height); // transparent background
+  ctx.fillStyle='black';
+  ctx.font='32px monospace';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  let faceToDraw=currentFace;
+  if(talking) faceToDraw = talkingToggle ? currentPreset.talk1 : currentPreset.talk2;
+  ctx.fillText(faceToDraw, canvas.width/2, canvas.height/2);
+}
+
+function animate(){
+  drawFace();
+  if(talking) talkingToggle = !talkingToggle;
+  animationId = setTimeout(animate,300);
+}
+
+function startBlinkCycle(){
+  clearTimeout(blinkTimeout);
+  const delay = 5000 + Math.random()*5000;
+  blinkTimeout=setTimeout(()=>{
+    if(!talking && !isSpaceDown && currentFace===currentPreset.neutral){
+      currentFace=currentPreset.blink;
+      drawFace();
+      setTimeout(()=>{if(currentFace===currentPreset.blink) currentFace=currentPreset.neutral; drawFace();},500);
+    }
+    startBlinkCycle();
+  },delay);
+}
+
+function analyzeAudio(){
+  analyser.getByteTimeDomainData(dataArray);
+  analyser.getFloatFrequencyData(freqArray);
+
+  let sum=0; for(let i=0;i<dataArray.length;i++){let v=(dataArray[i]-128)/128;sum+=v*v;}
+  let rms=Math.sqrt(sum/dataArray.length);
+  talking = rms>0.05 || isSpaceDown;
+
+  let maxFreq=-Infinity,index=0;
+  for(let i=0;i<freqArray.length;i++){if(freqArray[i]>maxFreq){maxFreq=freqArray[i]; index=i;}}
+  let freq = index * audioContext.sampleRate / analyser.fftSize;
+  if(talking){
+    if(freq>600) currentFace=currentPreset.happy;
+    else if(freq>200) currentFace=currentPreset.neutral;
+    else currentFace=currentPreset.angry;
+  } else {
+    if(!isSpaceDown && !currentFace.startsWith('/(')) currentFace=currentPreset.neutral;
+  }
+  requestAnimationFrame(analyzeAudio);
+}
+
+audioInput.addEventListener('change', async e=>{
+  if(!e.target.files[0]) return;
+  if(audioElement) audioElement.pause();
+  audioElement=new Audio(URL.createObjectURL(e.target.files[0]));
+  audioElement.crossOrigin="anonymous";
+  audioElement.load();
+  if(audioContext) audioContext.close();
+  audioContext=new (window.AudioContext || window.webkitAudioContext)();
+  source=audioContext.createMediaElementSource(audioElement);
+  analyser=audioContext.createAnalyser();
+  analyser.fftSize=2048;
+  dataArray=new Uint8Array(analyser.fftSize);
+  freqArray=new Float32Array(analyser.frequencyBinCount);
+  source.connect(analyser);
+  analyser.connect(audioContext.destination);
+  status.textContent='Status: Audio loaded';
+});
+
+recordBtn.addEventListener('click', async ()=>{
+  if(!audioElement){ alert('Load an audio file first'); return; }
+  chunks=[];
+  const canvasStream=canvas.captureStream(30);
+  const audioStream=audioElement.captureStream();
+  const combined=new MediaStream([...canvasStream.getVideoTracks(), ...audioStream.getAudioTracks()]);
+
+  recorder=new MediaRecorder(combined,{mimeType:'video/webm;codecs=vp8,opus'});
+  recorder.ondataavailable=e=>chunks.push(e.data);
+  recorder.onstop=()=>{
+    const blob=new Blob(chunks,{type:'video/webm'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='vtuber_video.webm';
+    a.click();
+    status.textContent='Status: Video ready to download';
+  };
+
+  animate();
+  startBlinkCycle();
+  recorder.start();
+  audioElement.play();
+  analyzeAudio();
+  status.textContent='Status: Recording...';
+
+  audioElement.onended=()=>{
+    clearTimeout(animationId);
+    clearTimeout(blinkTimeout);
+    recorder.stop();
+    currentFace=currentPreset.neutral;
+    drawFace();
+  };
+});
+
+presetSelect.addEventListener('change', e=>{
+  currentPreset = presets[e.target.value];
+  currentFace = currentPreset.neutral;
+  drawFace();
+});
+
+document.addEventListener('keydown', e=>{
+  if(e.repeat) return;
+  if(e.key==='1') currentFace=currentPreset.happy;
+  else if(e.key==='2') currentFace=currentPreset.angry;
+  else if(e.key==='3') currentFace=currentPreset.surprised;
+  else if(e.key==='0') currentFace=currentPreset.neutral;
+  else if(e.code==='Space'){ e.preventDefault(); isSpaceDown=true; talking=true; }
+});
+document.addEventListener('keyup', e=>{
+  if(e.code==='Space'){ isSpaceDown=false; talking=false; currentFace=currentPreset.neutral; }
+});
+</script>
+</body>
+  </html>

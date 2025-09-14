@@ -6,7 +6,16 @@
 </head>
 <body>
 <center>
-<h1>ASCII/Emoji VTuber v2.0</h1>
+<h1>VASCII v2.0</h1>
+
+<label>Theme: 
+<select id="themeSelect">
+  <option value="light">Light Mode</option>
+  <option value="dark">Dark Mode</option>
+</select>
+</label>
+<br><br>
+
 <canvas id="canvas" width="500" height="200" style="border:1px solid #000"></canvas>
 <br>
 <input type="file" id="audioFile" accept="audio/*">
@@ -28,6 +37,7 @@
     <li>Load an audio file → Start Recording → Download WebM</li>
     <li>Choose Preset from dropdown</li>
     <li>Create custom presets below</li>
+    <li>Switch theme with dropdown</li>
   </ul>
 </details>
 
@@ -35,6 +45,288 @@
 <form id="customPresetForm">
   Name: <input type="text" id="presetName" required><br>
   Neutral: <input type="text" id="neutralFace" required><br>
+  Happy: <input type="text" id="happyFace" required><br>
+  Angry: <input type="text" id="angryFace" required><br>
+  Surprised: <input type="text" id="surprisedFace" required><br>
+  Blink: <input type="text" id="blinkFace" required><br>
+  Talk 1: <input type="text" id="talk1Face" required><br>
+  Talk 2: <input type="text" id="talk2Face" required><br>
+  <button type="submit">Save Preset</button>
+</form>
+<br>
+<button id="exportPresetBtn">Export Current Preset</button>
+<br><br>
+<select id="deletePresetSelect">
+  <option value="">--Select custom preset--</option>
+</select>
+<button id="confirmDeleteBtn">Delete</button>
+<br>
+<input type="file" id="importPresetFile" accept=".txt">
+</center>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const audioInput = document.getElementById('audioFile');
+const recordBtn = document.getElementById('recordBtn');
+const presetSelect = document.getElementById('presetSelect');
+const status = document.getElementById('status');
+const deleteSelect = document.getElementById('deletePresetSelect');
+const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+const themeSelect = document.getElementById('themeSelect');
+
+let presets = {
+  ascii: {neutral:'/(\u00B0-\u00B0)\\', happy:'/(\u00B0o\u00B0)\\', angry:'/(\u003E_<)\\', surprised:'/(\u004F_\u004F)\\', blink:'/(-_-)\\', talk1:'/(\u00B0o\u00B0)\\', talk2:'/(\u00B0-\u00B0)\\'},
+  emojiboy:{neutral:'😐', happy:'😆', angry:'😠', surprised:'😮', blink:'😑', talk1:'😆', talk2:'😐'},
+  mitten:{neutral:'😺', happy:'😸', angry:'😾', surprised:'🙀', blink:'😿', talk1:'😸', talk2:'😺'},
+  bluedude:{neutral:'👤', happy:'🗣️', angry:'👤', surprised:'🗣️', blink:'👤', talk1:'🗣️', talk2:'👤'},
+  moon:{neutral:'🌚', happy:'🌝', angry:'🌚', surprised:'🌝', blink:'🌚', talk1:'🌝', talk2:'🌚'},
+  classic:{neutral:'[-_-]', happy:'[^_^]', angry:'[>_<]', surprised:'[O_O]', blink:'[-_-]', talk1:'[^_^]', talk2:'[-_-]'},
+  sniper:{neutral:'▄︻デ══━一', happy:'▄︻デ══━一💥', angry:'▄︻デ══━一', surprised:'▄︻デ══━一💥', blink:'▄︻デ══━一', talk1:'▄︻デ══━一💥', talk2:'▄︻デ══━一'},
+  rain:{neutral:'☁️', happy:'🌧️', angry:'⛈️', surprised:'🌩️', blink:'☁️', talk1:'🌧️', talk2:'☁️'},
+  teacher:{neutral:'/(°-°)\\', happy:'/(°o°)\\', angry:'/(>_<)\\', surprised:'/(O_O)\\', blink:'/(-_-)\\', talk1:'/(°o°)ノ', talk2:'/(°o°)—'}
+};
+
+let savedCustom = JSON.parse(localStorage.getItem('vtuber_presets') || '{}');
+Object.assign(presets, savedCustom);
+
+let currentPreset = presets['ascii'];
+let currentFace = currentPreset.neutral;
+let talking=false;
+let talkingToggle=false;
+let blinkTimeout;
+let audioContext, analyser, source, dataArray, freqArray, audioElement;
+let recorder, chunks=[], animationId;
+let isSpaceDown=false;
+
+function drawFace(){
+  let bgColor = themeSelect.value==='dark' ? 'black' : 'white';
+  let textColor = themeSelect.value==='dark' ? 'white' : 'black';
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = textColor;
+  ctx.font='32px monospace';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  let faceToDraw=currentFace;
+  if(talking) faceToDraw = talkingToggle ? currentPreset.talk1 : currentPreset.talk2;
+  ctx.fillText(faceToDraw, canvas.width/2, canvas.height/2);
+}
+
+themeSelect.addEventListener('change', drawFace);
+
+function animate(){
+  drawFace();
+  if(talking) talkingToggle = !talkingToggle;
+  animationId = setTimeout(animate,300);
+}
+
+function startBlinkCycle(){
+  clearTimeout(blinkTimeout);
+  const delay = 5000 + Math.random()*5000;
+  blinkTimeout=setTimeout(()=>{
+    if(!talking && !isSpaceDown && currentFace===currentPreset.neutral){
+      currentFace=currentPreset.blink;
+      drawFace();
+      setTimeout(()=>{if(currentFace===currentPreset.blink) currentFace=currentPreset.neutral; drawFace();},500);
+    }
+    startBlinkCycle();
+  },delay);
+}
+
+function analyzeAudio(){
+  analyser.getByteTimeDomainData(dataArray);
+  analyser.getFloatFrequencyData(freqArray);
+
+  let sum=0; for(let i=0;i<dataArray.length;i++){let v=(dataArray[i]-128)/128;sum+=v*v;}
+  let rms=Math.sqrt(sum/dataArray.length);
+  talking = rms>0.05 || isSpaceDown;
+
+  let maxFreq=-Infinity,index=0;
+  for(let i=0;i<freqArray.length;i++){if(freqArray[i]>maxFreq){maxFreq=freqArray[i]; index=i;}}
+  let freq = index * audioContext.sampleRate / analyser.fftSize;
+  if(talking){
+    if(freq>600) currentFace=currentPreset.happy;
+    else if(freq>200) currentFace=currentPreset.neutral;
+    else currentFace=currentPreset.angry;
+  } else {
+    if(!isSpaceDown && !currentFace.startsWith('/(')) currentFace=currentPreset.neutral;
+  }
+  requestAnimationFrame(analyzeAudio);
+}
+
+function populateDropdown(){
+  presetSelect.innerHTML='';
+  for(let key in presets){
+    let option = document.createElement('option');
+    option.value = key;
+    option.textContent = key;
+    presetSelect.appendChild(option);
+  }
+  currentPreset = presets[presetSelect.value];
+}
+
+function updateDeleteDropdown(){
+  deleteSelect.innerHTML = '<option value="">--Select custom preset--</option>';
+  for(let key in savedCustom){
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = key;
+    deleteSelect.appendChild(option);
+  }
+}
+
+populateDropdown();
+updateDeleteDropdown();
+
+audioInput.addEventListener('change', e=>{
+  if(!e.target.files[0]) return;
+  if(audioElement) audioElement.pause();
+  audioElement=new Audio(URL.createObjectURL(e.target.files[0]));
+  audioElement.crossOrigin="anonymous";
+  audioElement.load();
+  if(audioContext) audioContext.close();
+  audioContext=new (window.AudioContext || window.webkitAudioContext)();
+  source=audioContext.createMediaElementSource(audioElement);
+  analyser=audioContext.createAnalyser();
+  analyser.fftSize=2048;
+  dataArray=new Uint8Array(analyser.fftSize);
+  freqArray=new Float32Array(analyser.frequencyBinCount);
+  source.connect(analyser);
+  analyser.connect(audioContext.destination);
+  status.textContent='Status: Audio loaded';
+});
+
+recordBtn.addEventListener('click', ()=>{
+  if(!audioElement){ alert('Load an audio file first'); return; }
+  chunks=[];
+  const canvasStream=canvas.captureStream(30);
+  const audioStream=audioElement.captureStream();
+  const combined=new MediaStream([...canvasStream.getVideoTracks(), ...audioStream.getAudioTracks()]);
+
+  recorder=new MediaRecorder(combined,{mimeType:'video/webm;codecs=vp8,opus'});
+  recorder.ondataavailable=e=>chunks.push(e.data);
+  recorder.onstop=()=>{
+    const blob=new Blob(chunks,{type:'video/webm'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='vtuber_video.webm';
+    a.click();
+    status.textContent='Status: Video ready to download';
+  };
+
+  animate();
+  startBlinkCycle();
+  recorder.start();
+  audioElement.play();
+  analyzeAudio();
+  status.textContent='Status: Recording...';
+
+  audioElement.onended=()=>{
+    clearTimeout(animationId);
+    clearTimeout(blinkTimeout);
+    recorder.stop();
+    currentFace=currentPreset.neutral;
+    drawFace();
+  };
+});
+
+presetSelect.addEventListener('change', e=>{
+  currentPreset = presets[e.target.value];
+  currentFace = currentPreset.neutral;
+  drawFace();
+});
+
+document.addEventListener('keydown', e=>{
+  if(e.repeat) return;
+  if(e.key==='1') currentFace=currentPreset.happy;
+  else if(e.key==='2') currentFace=currentPreset.angry;
+  else if(e.key==='3') currentFace=currentPreset.surprised;
+  else if(e.key==='0') currentFace=currentPreset.neutral;
+  else if(e.code==='Space'){ e.preventDefault(); isSpaceDown=true; talking=true; }
+});
+document.addEventListener('keyup', e=>{
+  if(e.code==='Space'){ isSpaceDown=false; talking=false; currentFace=currentPreset.neutral; }
+});
+
+// Custom preset form
+document.getElementById('customPresetForm').addEventListener('submit', e=>{
+  e.preventDefault();
+  const name = document.getElementById('presetName').value.trim();
+  if(!name) return;
+  const newPreset = {
+    neutral: document.getElementById('neutralFace').value,
+    happy: document.getElementById('happyFace').value,
+    angry: document.getElementById('angryFace').value,
+    surprised: document.getElementById('surprisedFace').value,
+    blink: document.getElementById('blinkFace').value,
+    talk1: document.getElementById('talk1Face').value,
+    talk2: document.getElementById('talk2Face').value
+  };
+  presets[name] = newPreset;
+  savedCustom[name] = newPreset;
+  localStorage.setItem('vtuber_presets', JSON.stringify(savedCustom));
+  populateDropdown();
+  updateDeleteDropdown();
+  presetSelect.value = name;
+  currentPreset = newPreset;
+  currentFace = currentPreset.neutral;
+  drawFace();
+});
+
+// Export preset
+document.getElementById('exportPresetBtn').addEventListener('click', ()=>{
+  const data = JSON.stringify(currentPreset, null, 2);
+  const blob = new Blob([data], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = currentPreset.name ? currentPreset.name+'.txt' : 'preset.txt';
+  a.click();
+});
+
+// Import preset
+document.getElementById('importPresetFile').addEventListener('change', e=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(evt){
+    try{
+      const imported = JSON.parse(evt.target.result);
+      const name = file.name.replace('.txt','');
+      presets[name] = imported;
+      savedCustom[name] = imported;
+      localStorage.setItem('vtuber_presets', JSON.stringify(savedCustom));
+      populateDropdown();
+      updateDeleteDropdown();
+      presetSelect.value = name;
+      currentPreset = imported;
+      currentFace = currentPreset.neutral;
+      drawFace();
+    }catch(err){ alert('Invalid preset file'); }
+  };
+  reader.readAsText(file);
+});
+
+// Delete custom preset with submit button
+confirmDeleteBtn.addEventListener('click', ()=>{
+  const key = deleteSelect.value;
+  if(!key) { alert('Please select a custom preset to delete'); return; }
+  if(confirm(`Are you sure you want to delete custom preset "${key}"?`)){
+    delete presets[key];
+    delete savedCustom[key];
+    localStorage.setItem('vtuber_presets', JSON.stringify(savedCustom));
+    populateDropdown();
+    updateDeleteDropdown();
+    currentPreset = presets['ascii'];
+    presetSelect.value = 'ascii';
+    currentFace = currentPreset.neutral;
+    drawFace();
+  }
+});
+</script>
+</body>
+</html>  Neutral: <input type="text" id="neutralFace" required><br>
   Happy: <input type="text" id="happyFace" required><br>
   Angry: <input type="text" id="angryFace" required><br>
   Surprised: <input type="text" id="surprisedFace" required><br>
@@ -311,3 +603,4 @@ confirmDeleteBtn.addEventListener('click', ()=>{
 </script>
 </body>
 </html>
+
